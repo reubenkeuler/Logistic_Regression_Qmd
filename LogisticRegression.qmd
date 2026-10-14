@@ -1,0 +1,265 @@
+---
+title: "Logistic Regression Classifier"
+format: pdf
+editor: visual
+---
+
+#### ---------------------------------------------------------------------------
+
+### Load packages
+
+```{r setup}
+#| message: false
+library(tidyverse)
+library(tidymodels)   
+tidymodels_prefer()   
+```
+
+
+#### ---------------------------------------------------------------------------
+
+### Data exploration and formatting
+
+```{r}
+#| message: false
+
+default_data <- read_csv("default_data.csv")   # load dataset
+
+glimpse(default_data)   # observe variable types
+
+```
+
+
+```{r}
+# convert character types to factor types
+
+# keep the natural order (No, Yes)
+
+# glm() models the probability of the SECOND level, so the coefficients
+# describe the log-odds of default = "Yes" (same as on the slides)
+
+# yardstick treats the FIRST level as the event by default, so every
+# metric call below needs event_level = "second"
+
+default_data <- default_data |>
+  mutate(default = factor(default, levels =  c("No", "Yes")),
+         student = factor(student))
+
+glimpse(default_data)
+
+```
+
+
+```{r}
+
+levels(default_data$default)   # "Yes" is the second level = the event
+
+```
+
+
+```{r}
+# overall class frequency and proportion
+
+default_data |>
+  count(default) |>
+  mutate(prop = n / sum(n))
+
+```
+
+
+#### ---------------------------------------------------------------------------
+
+### Data splitting
+
+```{r}
+# data splitting (stratified, so both sets keep the ~3% default rate)
+
+set.seed(208)
+
+default_split <- initial_split(default_data, prop = 0.8, strata = default)
+
+default_train <- training(default_split)   # training set
+
+default_test <- testing(default_split)     # test set
+
+```
+
+
+```{r}
+# class frequencies and proportions
+
+# training set
+default_train |>
+  count(default) |>
+  mutate(prop = n / sum(n))
+
+# test set
+default_test |>
+  count(default) |>
+  mutate(prop = n / sum(n))
+
+```
+
+
+#### ---------------------------------------------------------------------------
+
+### Logistic Regression - Model training
+
+```{r}
+# write the recipe
+
+default_recipe <- recipe(default ~ balance, data = default_train) 
+
+```
+
+
+```{r}
+# specify the model, package engine, task/mode
+
+logreg_spec <- logistic_reg() |>
+  set_engine("glm") |> 
+  set_mode("classification")
+
+logreg_spec
+
+```
+
+
+```{r}
+# workflow = recipe + model
+
+logreg_wflow <- workflow() |>
+  add_recipe(default_recipe) |>
+  add_model(logreg_spec)
+
+logreg_wflow
+
+```
+
+
+```{r}
+# fit the model on the training set
+
+logreg_fit <- logreg_wflow |>
+  fit(data = default_train)
+
+logreg_fit
+
+```
+
+
+```{r}
+#| fig-align: "center"
+#| fig-width: 7
+#| fig-height: 4
+
+# the fitted S-shaped curve stays between 0 and 1
+# only for visualizing the model and for demonstration
+
+balance_grid <- tibble(balance = seq(min(default_train$balance), max(default_train$balance), by = 10))
+
+augment(logreg_fit, new_data = balance_grid) |>
+  ggplot(aes(x = balance, y = .pred_Yes)) +
+  geom_point(data = default_train,
+             aes(x = balance, y = as.numeric(default == "Yes")),
+             alpha = 0.1, color = "orange") +
+  geom_line(color = "blue", linewidth = 1) +
+  labs(x = "Balance", y = "Predicted probability of default")
+
+```
+
+
+#### ---------------------------------------------------------------------------
+
+### Obtaining predictions 
+
+```{r}
+# predicted probability of default for balance = $700 (for one observation)
+
+predict(logreg_fit, new_data = tibble(balance = 700), type = "prob")
+
+```
+
+
+```{r}
+# predictions for the entire test set
+# augment() adds .pred_class, .pred_No, .pred_Yes to the test set in one step
+
+default_test_preds <- augment(logreg_fit, new_data = default_test)
+
+default_test_preds |>
+  # select(default, balance, .pred_class, .pred_No, .pred_Yes) |>   # optional
+  head(10)
+
+```
+
+
+```{r}
+# class predictions with a threshold we choose ourselves
+
+threshold <- 0.2   # set threshold
+
+default_test_preds <- default_test_preds |>
+  mutate(.pred_class_thresh = factor(if_else(.pred_Yes > threshold, "Yes", "No"),
+                                     levels = c("No", "Yes")))
+
+
+default_test_preds
+
+```
+
+
+#### ---------------------------------------------------------------------------
+
+### Model Assessment
+
+### confusion matrix
+
+```{r}
+# create confusion matrix (rows = predicted, columns = actual)
+
+logreg_cm <- default_test_preds |>
+  conf_mat(truth = default, estimate = .pred_class)
+
+logreg_cm
+
+```
+
+
+```{r}
+# all metrics at once
+# NOTE the event_level = "second" which is class "Yes"
+
+summary(logreg_cm, event_level = "second")
+
+```
+
+
+### ROC curve and AUC
+
+```{r}
+#| fig-align: "center"
+#| fig-width: 6
+#| fig-height: 6
+
+# ROC curve
+
+logreg_roc <- default_test_preds |>
+  roc_curve(truth = default, .pred_Yes, event_level = "second")
+
+autoplot(logreg_roc)
+
+```
+
+
+```{r}
+# obtain AUC
+
+default_test_preds |>
+  roc_auc(truth = default, .pred_Yes, event_level = "second")
+
+```
+
+
+#### ---------------------------------------------------------------------------
+
